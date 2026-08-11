@@ -116,7 +116,7 @@ function fitFontSize(ctx, text, maxWidthPx, baseFontPx, weight, minFontPx = 8) {
 }
 
 export default function App() {
-  const [mode, setMode] = useState("editor"); // 'editor' | 'fill'
+  const [mode, setMode] = useState("fill"); // 'editor' | 'fill'
 
   return (
     <div style={{ background: PAPER, minHeight: 640, fontFamily: "'Space Grotesk', system-ui, sans-serif", color: INK }}>
