@@ -118,6 +118,7 @@ function fitFontSize(ctx, text, maxWidthPx, baseFontPx, weight, minFontPx = 8) {
 export default function App() {
   const [mode, setMode] = useState("fill"); // 'editor' | 'fill'
 
+
   return (
     <div style={{ background: PAPER, minHeight: 640, fontFamily: "'Space Grotesk', system-ui, sans-serif", color: INK }}>
       <style>{`
@@ -210,9 +211,10 @@ function EditorPage() {
   };
 
   const onOverlayMouseDown = (e) => {
-    if (e.target !== overlayRef.current) return; // clicked a field box, ignore
     const { x, y } = pctFromEvent(e);
-    setDrawing({ x0: x, y0: y, x1: x, y1: y });
+    const fieldEl = e.target.closest ? e.target.closest("[data-field-id]") : null;
+    const clickedFieldId = fieldEl ? fieldEl.getAttribute("data-field-id") : null;
+    setDrawing({ x0: x, y0: y, x1: x, y1: y, clickedFieldId });
   };
   const onOverlayMouseMove = (e) => {
     if (!drawing) return;
@@ -221,12 +223,26 @@ function EditorPage() {
   };
   const onOverlayMouseUp = () => {
     if (!drawing) return;
-    const x = Math.min(drawing.x0, drawing.x1);
-    const y = Math.min(drawing.y0, drawing.y1);
-    const w = Math.abs(drawing.x1 - drawing.x0);
-    const h = Math.abs(drawing.y1 - drawing.y0);
+    let x = Math.min(drawing.x0, drawing.x1);
+    let y = Math.min(drawing.y0, drawing.y1);
+    let w = Math.abs(drawing.x1 - drawing.x0);
+    let h = Math.abs(drawing.y1 - drawing.y0);
+    const clickedFieldId = drawing.clickedFieldId;
     setDrawing(null);
-    if (w < 2 || h < 2) return;
+    if (w < 2 || h < 2) {
+      if (clickedFieldId) {
+        // Plain click (no real drag) on an existing field: just select it.
+        setSelectedId(clickedFieldId);
+        return;
+      }
+      // Plain click on empty area: create a default-size box centered on the click.
+      w = 20;
+      h = 8;
+      x = Math.min(Math.max(drawing.x1 - w / 2, 0), 100 - w);
+      y = Math.min(Math.max(drawing.y1 - h / 2, 0), 100 - h);
+    }
+    // A real drag always creates a new field, even if it started on top of
+    // an existing one — so overlapping/nearby fields can still be drawn.
     const newField = {
       id: uid(),
       label: `field_${fields.length + 1}`,
@@ -235,6 +251,7 @@ function EditorPage() {
       color: "#16233A",
       align: "left",
       fontWeight: 600,
+      bgColor: null,
     };
     setFields((f) => [...f, newField]);
     setSelectedId(newField.id);
@@ -332,6 +349,42 @@ function EditorPage() {
                   />
                 </LabeledInput>
                 <div className="flex gap-2">
+                  <LabeledInput label="Posisi X (%)">
+                    <input
+                      type="number" min={0} max={100} step={0.5}
+                      value={Math.round(selected.x * 10) / 10}
+                      onChange={(e) => updateField(selected.id, { x: parseFloat(e.target.value) || 0 })}
+                      style={{ width: "100%", padding: "6px 8px", borderRadius: 4, border: `1px solid ${LINE}`, fontSize: 13 }}
+                    />
+                  </LabeledInput>
+                  <LabeledInput label="Posisi Y (%)">
+                    <input
+                      type="number" min={0} max={100} step={0.5}
+                      value={Math.round(selected.y * 10) / 10}
+                      onChange={(e) => updateField(selected.id, { y: parseFloat(e.target.value) || 0 })}
+                      style={{ width: "100%", padding: "6px 8px", borderRadius: 4, border: `1px solid ${LINE}`, fontSize: 13 }}
+                    />
+                  </LabeledInput>
+                </div>
+                <div className="flex gap-2">
+                  <LabeledInput label="Lebar (%)">
+                    <input
+                      type="number" min={1} max={100} step={0.5}
+                      value={Math.round(selected.w * 10) / 10}
+                      onChange={(e) => updateField(selected.id, { w: parseFloat(e.target.value) || 1 })}
+                      style={{ width: "100%", padding: "6px 8px", borderRadius: 4, border: `1px solid ${LINE}`, fontSize: 13 }}
+                    />
+                  </LabeledInput>
+                  <LabeledInput label="Tinggi (%)">
+                    <input
+                      type="number" min={1} max={100} step={0.5}
+                      value={Math.round(selected.h * 10) / 10}
+                      onChange={(e) => updateField(selected.id, { h: parseFloat(e.target.value) || 1 })}
+                      style={{ width: "100%", padding: "6px 8px", borderRadius: 4, border: `1px solid ${LINE}`, fontSize: 13 }}
+                    />
+                  </LabeledInput>
+                </div>
+                <div className="flex gap-2">
                   <LabeledInput label="Ukuran teks (% tinggi)">
                     <input
                       type="number" min={1} max={20} step={0.5}
@@ -368,9 +421,34 @@ function EditorPage() {
                     ))}
                   </div>
                 </LabeledInput>
+                <LabeledInput label="Warna latar (opsional)">
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => updateField(selected.id, { bgColor: selected.bgColor ? null : "#FFFFFF" })}
+                      className="mono"
+                      style={{
+                        padding: "5px 10px", fontSize: 11, borderRadius: 4,
+                        border: `1px solid ${selected.bgColor ? TEAL : LINE}`,
+                        background: selected.bgColor ? TEAL : "transparent",
+                        color: selected.bgColor ? PAPER : INK,
+                      }}
+                    >
+                      {selected.bgColor ? "Aktif" : "Tidak ada"}
+                    </button>
+                    {selected.bgColor && (
+                      <input
+                        type="color"
+                        value={selected.bgColor}
+                        onChange={(e) => updateField(selected.id, { bgColor: e.target.value })}
+                        style={{ flex: 1, height: 28, borderRadius: 4, border: `1px solid ${LINE}` }}
+                      />
+                    )}
+                  </div>
+                </LabeledInput>
                 <button
                   onClick={() => deleteField(selected.id)}
-                  style={{ fontSize: 12, color: "#B0432E", textAlign: "left", padding: "4px 0" }}
+                  // style={{ fontSize: 12, color: "#B0432E", textAlign: "left", padding: "4px 0" }}
+                  className="bg-red-100 border border-red-300 w-fit py-1.5 px-2 text-red-500 text-xs rounded-md font-medium"
                 >
                   Hapus field ini
                 </button>
@@ -428,12 +506,14 @@ function EditorPage() {
                 <div
                   key={f.id}
                   className="field-box"
-                  onMouseDown={(e) => { e.stopPropagation(); setSelectedId(f.id); }}
+                  data-field-id={f.id}
                   style={{
                     position: "absolute",
                     left: `${f.x}%`, top: `${f.y}%`, width: `${f.w}%`, height: `${f.h}%`,
                     border: `1.5px dashed ${selectedId === f.id ? TEAL_DARK : TEAL}`,
-                    background: selectedId === f.id ? "rgba(15,110,106,0.14)" : "rgba(15,110,106,0.06)",
+                    background: f.bgColor
+                      ? f.bgColor
+                      : selectedId === f.id ? "rgba(15,110,106,0.14)" : "rgba(15,110,106,0.06)",
                     cursor: "pointer",
                   }}
                 >
@@ -441,7 +521,7 @@ function EditorPage() {
                     className="mono"
                     style={{
                       position: "absolute", top: -18, left: 0, fontSize: 10, background: TEAL_DARK, color: PAPER,
-                      padding: "1px 5px", borderRadius: 3, whiteSpace: "nowrap",
+                      padding: "1px 5px", borderRadius: 3, whiteSpace: "nowrap", pointerEvents: "none",
                     }}
                   >
                     {f.label}
@@ -569,6 +649,11 @@ function FillPage() {
           ctx.beginPath();
           ctx.rect(boxX, boxY, boxW, boxH);
           ctx.clip();
+
+          if (f.bgColor) {
+            ctx.fillStyle = f.bgColor;
+            ctx.fillRect(boxX, boxY, boxW, boxH);
+          }
 
           ctx.font = `${f.fontWeight || 600} ${fontPx}px 'JetBrains Mono', monospace`;
           ctx.fillStyle = f.color || "#16233A";
@@ -750,6 +835,7 @@ function FillPage() {
                 fontSize: `${getPreviewFontPx(f, values[f.id] || f.label)}px`,
                 color: f.color, fontWeight: f.fontWeight || 600,
                 fontFamily: "'JetBrains Mono', monospace",
+                background: f.bgColor || "transparent",
                 overflow: "hidden", whiteSpace: "nowrap", pointerEvents: "none",
               }}
             >
