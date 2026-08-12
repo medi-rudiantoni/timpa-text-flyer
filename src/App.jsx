@@ -446,7 +446,6 @@ function EditorPage() {
                 </LabeledInput>
                 <button
                   onClick={() => deleteField(selected.id)}
-                  // style={{ fontSize: 12, color: "#B0432E", textAlign: "left", padding: "4px 0" }}
                   className="bg-red-100 border border-red-300 w-fit py-1.5 px-2 text-red-500 text-xs rounded-md font-medium"
                 >
                   Hapus field ini
