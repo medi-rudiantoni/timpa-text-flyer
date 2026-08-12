@@ -115,7 +115,7 @@ function fitFontSize(ctx, text, maxWidthPx, baseFontPx, weight, minFontPx = 8) {
   return size;
 }
 
-export default function App() {
+export default function TemplateEditorApp() {
   const [mode, setMode] = useState("editor"); // 'editor' | 'fill'
 
   return (
@@ -250,6 +250,7 @@ function EditorPage() {
       color: "#16233A",
       align: "left",
       fontWeight: 600,
+      bgColor: null,
     };
     setFields((f) => [...f, newField]);
     setSelectedId(newField.id);
@@ -419,9 +420,34 @@ function EditorPage() {
                     ))}
                   </div>
                 </LabeledInput>
+                <LabeledInput label="Warna latar (opsional)">
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => updateField(selected.id, { bgColor: selected.bgColor ? null : "#FFFFFF" })}
+                      className="mono"
+                      style={{
+                        padding: "5px 10px", fontSize: 11, borderRadius: 4,
+                        border: `1px solid ${selected.bgColor ? TEAL : LINE}`,
+                        background: selected.bgColor ? TEAL : "transparent",
+                        color: selected.bgColor ? PAPER : INK,
+                      }}
+                    >
+                      {selected.bgColor ? "Aktif" : "Tidak ada"}
+                    </button>
+                    {selected.bgColor && (
+                      <input
+                        type="color"
+                        value={selected.bgColor}
+                        onChange={(e) => updateField(selected.id, { bgColor: e.target.value })}
+                        style={{ flex: 1, height: 28, borderRadius: 4, border: `1px solid ${LINE}` }}
+                      />
+                    )}
+                  </div>
+                </LabeledInput>
                 <button
                   onClick={() => deleteField(selected.id)}
-                  style={{ fontSize: 12, color: "#B0432E", textAlign: "left", padding: "4px 0" }}
+                  // style={{ fontSize: 12, color: "#B0432E", textAlign: "left", padding: "4px 0" }}
+                  className="bg-red-100 border border-red-300 w-fit py-1.5 px-2 text-red-500 text-xs rounded-md font-medium"
                 >
                   Hapus field ini
                 </button>
@@ -484,7 +510,9 @@ function EditorPage() {
                     position: "absolute",
                     left: `${f.x}%`, top: `${f.y}%`, width: `${f.w}%`, height: `${f.h}%`,
                     border: `1.5px dashed ${selectedId === f.id ? TEAL_DARK : TEAL}`,
-                    background: selectedId === f.id ? "rgba(15,110,106,0.14)" : "rgba(15,110,106,0.06)",
+                    background: f.bgColor
+                      ? f.bgColor
+                      : selectedId === f.id ? "rgba(15,110,106,0.14)" : "rgba(15,110,106,0.06)",
                     cursor: "pointer",
                   }}
                 >
@@ -620,6 +648,11 @@ function FillPage() {
           ctx.beginPath();
           ctx.rect(boxX, boxY, boxW, boxH);
           ctx.clip();
+
+          if (f.bgColor) {
+            ctx.fillStyle = f.bgColor;
+            ctx.fillRect(boxX, boxY, boxW, boxH);
+          }
 
           ctx.font = `${f.fontWeight || 600} ${fontPx}px 'JetBrains Mono', monospace`;
           ctx.fillStyle = f.color || "#16233A";
@@ -801,6 +834,7 @@ function FillPage() {
                 fontSize: `${getPreviewFontPx(f, values[f.id] || f.label)}px`,
                 color: f.color, fontWeight: f.fontWeight || 600,
                 fontFamily: "'JetBrains Mono', monospace",
+                background: f.bgColor || "transparent",
                 overflow: "hidden", whiteSpace: "nowrap", pointerEvents: "none",
               }}
             >
