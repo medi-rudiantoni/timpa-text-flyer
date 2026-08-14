@@ -38,23 +38,29 @@ function loadScript(src, globalCheck) {
   });
 }
 
-async function pdfFileToDataURL(file) {
+async function pdfFileToImages(file, maxPages = 30) {
   await loadScript(PDFJS_URL, () => window.pdfjsLib);
   window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL;
   const buf = await file.arrayBuffer();
   const doc = await window.pdfjsLib.getDocument({ data: buf }).promise;
-  const page = await doc.getPage(1);
-  const viewport = page.getViewport({ scale: 2 });
-  const canvas = document.createElement("canvas");
-  canvas.width = viewport.width;
-  canvas.height = viewport.height;
-  await page.render({ canvasContext: canvas.getContext("2d"), viewport }).promise;
-  return canvas.toDataURL("image/png");
+  const count = Math.min(doc.numPages, maxPages);
+  const images = [];
+  for (let i = 1; i <= count; i++) {
+    const page = await doc.getPage(i);
+    const viewport = page.getViewport({ scale: 2 });
+    const canvas = document.createElement("canvas");
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+    await page.render({ canvasContext: canvas.getContext("2d"), viewport }).promise;
+    images.push(canvas.toDataURL("image/png"));
+  }
+  return images;
 }
 
-/* Self-contained PDF writer: embeds a JPEG directly (DCTDecode) as a single page.
-   No external library needed, so it can't fail due to a blocked CDN script. */
-function buildPdfFromJpeg(jpegBytes, width, height) {
+/* Self-contained PDF writer: embeds one JPEG per page (DCTDecode). No
+   external library needed, so it can't fail due to a blocked CDN script. */
+function buildMultiPagePdf(pages) {
+  // pages: [{ jpegBytes: Uint8Array, width, height }, ...]
   const parts = [];
   const offsets = {};
   let offset = 0;
@@ -64,26 +70,41 @@ function buildPdfFromJpeg(jpegBytes, width, height) {
     offset += bytes.length;
   };
 
+  const objMap = pages.map((_, idx) => {
+    const base = 3 + idx * 3;
+    return { page: base, img: base + 1, content: base + 2 };
+  });
+  const totalObjs = 2 + pages.length * 3;
+
   push("%PDF-1.4\n");
+
   offsets[1] = offset;
   push("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+
+  const kids = objMap.map((o) => `${o.page} 0 R`).join(" ");
   offsets[2] = offset;
-  push("2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
-  offsets[3] = offset;
-  push(`3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${width} ${height}] /Resources << /XObject << /Im0 4 0 R >> >> /Contents 5 0 R >>\nendobj\n`);
-  offsets[4] = offset;
-  push(`4 0 obj\n<< /Type /XObject /Subtype /Image /Width ${width} /Height ${height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${jpegBytes.length} >>\nstream\n`);
-  push(jpegBytes);
-  push("\nendstream\nendobj\n");
-  const content = `q ${width} 0 0 ${height} 0 0 cm /Im0 Do Q`;
-  offsets[5] = offset;
-  push(`5 0 obj\n<< /Length ${content.length} >>\nstream\n${content}\nendstream\nendobj\n`);
+  push(`2 0 obj\n<< /Type /Pages /Kids [${kids}] /Count ${pages.length} >>\nendobj\n`);
+
+  pages.forEach((p, idx) => {
+    const { page, img, content } = objMap[idx];
+    offsets[page] = offset;
+    push(`${page} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${p.width} ${p.height}] /Resources << /XObject << /Im0 ${img} 0 R >> >> /Contents ${content} 0 R >>\nendobj\n`);
+
+    offsets[img] = offset;
+    push(`${img} 0 obj\n<< /Type /XObject /Subtype /Image /Width ${p.width} /Height ${p.height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${p.jpegBytes.length} >>\nstream\n`);
+    push(p.jpegBytes);
+    push("\nendstream\nendobj\n");
+
+    const contentStr = `q ${p.width} 0 0 ${p.height} 0 0 cm /Im0 Do Q`;
+    offsets[content] = offset;
+    push(`${content} 0 obj\n<< /Length ${contentStr.length} >>\nstream\n${contentStr}\nendstream\nendobj\n`);
+  });
 
   const xrefOffset = offset;
-  let xref = "xref\n0 6\n0000000000 65535 f \n";
-  for (let i = 1; i <= 5; i++) xref += String(offsets[i]).padStart(10, "0") + " 00000 n \n";
+  let xref = `xref\n0 ${totalObjs + 1}\n0000000000 65535 f \n`;
+  for (let i = 1; i <= totalObjs; i++) xref += String(offsets[i] || 0).padStart(10, "0") + " 00000 n \n";
   push(xref);
-  push(`trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`);
+  push(`trailer\n<< /Size ${totalObjs + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`);
 
   const total = parts.reduce((sum, p) => sum + p.length, 0);
   const out = new Uint8Array(total);
@@ -98,6 +119,12 @@ function dataUrlToBytes(dataUrl) {
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   return bytes;
+}
+
+function dataUrlToBlob(dataUrl) {
+  const mimeMatch = dataUrl.match(/^data:(.*?);base64,/);
+  const mime = mimeMatch ? mimeMatch[1] : "image/png";
+  return new Blob([dataUrlToBytes(dataUrl)], { type: mime });
 }
 
 /* Shrinks a font size (px) until `text` fits within `maxWidthPx`, so preview
@@ -182,6 +209,8 @@ function EditorPage() {
   const [saveStatus, setSaveStatus] = useState(""); // '', 'saving', 'saved', 'error'
   const [drawing, setDrawing] = useState(null);
   const [uploadStatus, setUploadStatus] = useState(""); // '', 'loading', 'error'
+  const [pdfPages, setPdfPages] = useState([]); // dataURLs for each page, when source is a multi-page PDF
+  const [pdfPageIndex, setPdfPageIndex] = useState(0);
   const overlayRef = useRef(null);
 
   const selected = fields.find((f) => f.id === selectedId) || null;
@@ -192,14 +221,28 @@ function EditorPage() {
     setUploadStatus("loading");
     try {
       const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
-      const dataUrl = isPdf ? await pdfFileToDataURL(file) : await fileToDataURL(file);
-      setImage(dataUrl);
+      if (isPdf) {
+        const pages = await pdfFileToImages(file);
+        setPdfPages(pages);
+        setPdfPageIndex(0);
+        setImage(pages[0]);
+      } else {
+        setPdfPages([]);
+        setPdfPageIndex(0);
+        setImage(await fileToDataURL(file));
+      }
       setFields([]);
       setSelectedId(null);
       setUploadStatus("");
     } catch (err) {
       setUploadStatus("error");
     }
+  };
+
+  const selectPdfPage = (idx) => {
+    setPdfPageIndex(idx);
+    setImage(pdfPages[idx]);
+    setSelectedId(null);
   };
 
   const pctFromEvent = (e) => {
@@ -251,6 +294,7 @@ function EditorPage() {
       align: "left",
       fontWeight: 600,
       bgColor: null,
+      page: pdfPageIndex,
     };
     setFields((f) => [...f, newField]);
     setSelectedId(newField.id);
@@ -262,15 +306,32 @@ function EditorPage() {
     if (selectedId === id) setSelectedId(null);
   };
 
+  const currentPageFields = fields.filter((f) => (f.page || 0) === pdfPageIndex);
+
   const canSave = image && fields.length > 0 && templateName.trim().length > 0;
 
   const handleSave = async () => {
     if (!canSave) return;
     setSaveStatus("saving");
     try {
+      const pagesToSave = pdfPages.length ? pdfPages : [image];
+      const templateId = `${Date.now()}_${uid()}`;
+      const uploadedUrls = await Promise.all(
+        pagesToSave.map(async (dataUrl, i) => {
+          const blob = dataUrlToBlob(dataUrl);
+          const ext = blob.type === "image/jpeg" ? "jpg" : "png";
+          const path = `${templateId}/page-${i + 1}.${ext}`;
+          const { error: upErr } = await supabase.storage
+            .from("template-images")
+            .upload(path, blob, { contentType: blob.type, upsert: true });
+          if (upErr) throw upErr;
+          const { data: pub } = supabase.storage.from("template-images").getPublicUrl(path);
+          return pub.publicUrl;
+        })
+      );
       const { error } = await supabase
         .from("templates")
-        .insert({ name: templateName.trim(), image, fields });
+        .insert({ name: templateName.trim(), image: uploadedUrls[0], fields, pages: uploadedUrls });
       setSaveStatus(error ? "error" : "saved");
     } catch (err) {
       setSaveStatus("error");
@@ -301,8 +362,32 @@ function EditorPage() {
           )}
           {!image && uploadStatus !== "error" && (
             <p style={{ fontSize: 12, color: "#8A8577", marginTop: 8, lineHeight: 1.5 }}>
-              Upload hasil export desain (flyer, banner) — PNG, JPG, atau PDF (halaman pertama otomatis dipakai). Setelah itu tandai area yang boleh diubah sales dengan klik-drag di atas gambar.
+              Upload hasil export desain (flyer, banner) — PNG, JPG, atau PDF (semua halaman bisa dipilih). Setelah itu tandai area yang boleh diubah sales dengan klik-drag di atas gambar.
             </p>
+          )}
+          {pdfPages.length > 1 && (
+            <div style={{ marginTop: 10 }}>
+              <div className="mono" style={{ fontSize: 10, letterSpacing: 0.5, color: "#8A8577", marginBottom: 6 }}>
+                PILIH HALAMAN ({pdfPages.length})
+              </div>
+              <div className="flex gap-2" style={{ overflowX: "auto", paddingBottom: 4 }}>
+                {pdfPages.map((p, idx) => (
+                  <button
+                    key={idx}
+                    onClick={() => selectPdfPage(idx)}
+                    style={{
+                      flexShrink: 0, width: 52, padding: 0, borderRadius: 4, overflow: "hidden",
+                      border: `2px solid ${idx === pdfPageIndex ? TEAL : LINE}`,
+                    }}
+                  >
+                    <img src={p} alt={`Halaman ${idx + 1}`} style={{ width: "100%", display: "block" }} />
+                  </button>
+                ))}
+              </div>
+              <p style={{ fontSize: 11, color: "#8A8577", marginTop: 6, lineHeight: 1.4 }}>
+                Field tersimpan per halaman — pindah halaman aman, field di halaman lain tidak hilang.
+              </p>
+            </div>
           )}
         </div>
 
@@ -310,13 +395,15 @@ function EditorPage() {
           <>
             <div>
               <div className="mono" style={{ fontSize: 11, letterSpacing: 1, color: "#6B7280", marginBottom: 6 }}>
-                DAFTAR FIELD ({fields.length})
+                DAFTAR FIELD ({currentPageFields.length}){pdfPages.length > 1 && (
+                  <span style={{ color: "#B5AF9C" }}> · total template: {fields.length}</span>
+                )}
               </div>
               <div className="flex flex-col gap-1" style={{ maxHeight: 180, overflowY: "auto" }}>
-                {fields.length === 0 && (
-                  <p style={{ fontSize: 12, color: "#8A8577" }}>Belum ada field. Drag di atas gambar untuk membuat satu.</p>
+                {currentPageFields.length === 0 && (
+                  <p style={{ fontSize: 12, color: "#8A8577" }}>Belum ada field di halaman ini. Drag di atas gambar untuk membuat satu.</p>
                 )}
-                {fields.map((f, i) => (
+                {currentPageFields.map((f, i) => (
                   <button
                     key={f.id}
                     onClick={() => setSelectedId(f.id)}
@@ -446,7 +533,7 @@ function EditorPage() {
                 </LabeledInput>
                 <button
                   onClick={() => deleteField(selected.id)}
-                  className="bg-red-100 border border-red-300 w-fit py-1.5 px-2 text-red-500 text-xs rounded-md font-medium"
+                  style={{ fontSize: 12, color: "#B0432E", textAlign: "left", padding: "4px 0" }}
                 >
                   Hapus field ini
                 </button>
@@ -482,14 +569,14 @@ function EditorPage() {
       </div>
 
       {/* Canvas area */}
-      <div className="blueprint-bg flex-1 flex items-center justify-center p-8" style={{ overflow: "auto" }}>
+      <div className="blueprint-bg flex-1 flex p-8" style={{ overflow: "auto" }}>
         {!image ? (
-          <div className="mono" style={{ color: "#9A9587", fontSize: 13, textAlign: "center" }}>
+          <div className="mono" style={{ color: "#9A9587", fontSize: 13, textAlign: "center", margin: "auto" }}>
             [ belum ada gambar — upload desain di panel kiri ]
           </div>
         ) : (
           <div
-            style={{ position: "relative", maxWidth: "100%", boxShadow: "0 4px 20px rgba(22,35,58,0.15)" }}
+            style={{ position: "relative", maxWidth: "100%", margin: "auto", boxShadow: "0 4px 20px rgba(22,35,58,0.15)" }}
           >
             <img src={image} alt="template" style={{ display: "block", width: "100%", maxWidth: 640, userSelect: "none" }} draggable={false} />
             <div
@@ -500,7 +587,7 @@ function EditorPage() {
               onMouseLeave={() => setDrawing(null)}
               style={{ position: "absolute", inset: 0, cursor: "crosshair" }}
             >
-              {fields.map((f) => (
+              {currentPageFields.map((f) => (
                 <div
                   key={f.id}
                   className="field-box"
@@ -558,6 +645,108 @@ function LabeledInput({ label, children }) {
 
 /* ============================== FILL (SALES) ============================== */
 
+function getTemplatePages(t) {
+  return t.pages && t.pages.length ? t.pages : [t.image];
+}
+
+function renderPageCanvas(imgSrc, pageFields, values) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0);
+      pageFields.forEach((f) => {
+        const boxX = (f.x / 100) * canvas.width;
+        const boxY = (f.y / 100) * canvas.height;
+        const boxW = (f.w / 100) * canvas.width;
+        const boxH = (f.h / 100) * canvas.height;
+        const text = values[f.id] || "";
+        const baseFontPx = (f.fontSizePct / 100) * canvas.height;
+        const safeWidth = boxW * 0.92;
+        const fontPx = fitFontSize(ctx, text, safeWidth, baseFontPx, f.fontWeight);
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(boxX, boxY, boxW, boxH);
+        ctx.clip();
+
+        if (f.bgColor) {
+          ctx.fillStyle = f.bgColor;
+          ctx.fillRect(boxX, boxY, boxW, boxH);
+        }
+
+        ctx.font = `${f.fontWeight || 600} ${fontPx}px 'JetBrains Mono', monospace`;
+        ctx.fillStyle = f.color || "#16233A";
+        ctx.textBaseline = "middle";
+        ctx.textAlign = f.align || "left";
+        let drawX = boxX + boxW * 0.04;
+        if (f.align === "center") drawX = boxX + boxW / 2;
+        else if (f.align === "right") drawX = boxX + boxW * 0.96;
+        ctx.fillText(text, drawX, boxY + boxH / 2);
+        ctx.restore();
+      });
+      resolve(canvas);
+    };
+    img.onerror = reject;
+    img.src = imgSrc;
+  });
+}
+
+function PagePreview({ pageSrc, pageFields, values }) {
+  const imgRef = useRef(null);
+  const measureCanvasRef = useRef(null);
+  const [dispSize, setDispSize] = useState({ w: 0, h: 0 });
+
+  useEffect(() => {
+    if (!imgRef.current) return;
+    const el = imgRef.current;
+    const update = () => setDispSize({ w: el.clientWidth, h: el.clientHeight });
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [pageSrc]);
+
+  const getFontPx = (f, text) => {
+    if (!dispSize.h) return f.fontSizePct * 6.4;
+    if (!measureCanvasRef.current) measureCanvasRef.current = document.createElement("canvas");
+    const ctx = measureCanvasRef.current.getContext("2d");
+    const baseFontPx = dispSize.h * (f.fontSizePct / 100);
+    const safeWidth = dispSize.w * (f.w / 100) * 0.92;
+    return fitFontSize(ctx, text || "", safeWidth, baseFontPx, f.fontWeight);
+  };
+
+  return (
+    <div style={{ position: "relative", boxShadow: "0 4px 20px rgba(22,35,58,0.15)" }}>
+      <img ref={imgRef} src={pageSrc} style={{ display: "block", width: "100%" }} draggable={false} />
+      {pageFields.map((f) => (
+        <div
+          key={f.id}
+          style={{
+            position: "absolute",
+            left: `${f.x}%`, top: `${f.y}%`, width: `${f.w}%`, height: `${f.h}%`,
+            display: "flex", alignItems: "center",
+            justifyContent: f.align === "center" ? "center" : f.align === "right" ? "flex-end" : "flex-start",
+            fontSize: `${getFontPx(f, values[f.id] || f.label)}px`,
+            color: f.color, fontWeight: f.fontWeight || 600,
+            fontFamily: "'JetBrains Mono', monospace",
+            background: f.bgColor || "transparent",
+            overflow: "hidden", whiteSpace: "nowrap", pointerEvents: "none",
+          }}
+        >
+          <span style={{ opacity: values[f.id] ? 1 : 0.35 }}>
+            {values[f.id] || f.label}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function FillPage() {
   const [templates, setTemplates] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -567,28 +756,7 @@ function FillPage() {
   const [downloadFormat, setDownloadFormat] = useState("png");
   const [downloading, setDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState("");
-  const previewImgRef = useRef(null);
-  const measureCanvasRef = useRef(null);
-  const [dispSize, setDispSize] = useState({ w: 0, h: 0 });
-
-  useEffect(() => {
-    if (!previewImgRef.current || !selected) return;
-    const el = previewImgRef.current;
-    const update = () => setDispSize({ w: el.clientWidth, h: el.clientHeight });
-    update();
-    const ro = new ResizeObserver(update);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [selected]);
-
-  const getPreviewFontPx = (f, text) => {
-    if (!dispSize.h) return f.fontSizePct * 6.4; // fallback before image has measured size
-    if (!measureCanvasRef.current) measureCanvasRef.current = document.createElement("canvas");
-    const ctx = measureCanvasRef.current.getContext("2d");
-    const baseFontPx = dispSize.h * (f.fontSizePct / 100);
-    const safeWidth = dispSize.w * (f.w / 100) * 0.92;
-    return fitFontSize(ctx, text || "", safeWidth, baseFontPx, f.fontWeight);
-  };
+  const [previewFilter, setPreviewFilter] = useState("withFields"); // 'withFields' | 'all'
 
   const loadTemplates = useCallback(async () => {
     setLoading(true);
@@ -613,70 +781,42 @@ function FillPage() {
       const init = {};
       selected.fields.forEach((f) => { init[f.id] = ""; });
       setValues(init);
+      setPreviewFilter("withFields");
     }
   }, [selected]);
 
-  const deleteTemplate = async (id, e) => {
+  const deleteTemplate = async (t, e) => {
     e.stopPropagation();
     try {
-      await supabase.from("templates").delete().eq("id", id);
+      const marker = "/object/public/template-images/";
+      const paths = getTemplatePages(t)
+        .map((url) => {
+          const idx = url.indexOf(marker);
+          return idx >= 0 ? url.slice(idx + marker.length) : null;
+        })
+        .filter(Boolean);
+      if (paths.length) await supabase.storage.from("template-images").remove(paths);
+      await supabase.from("templates").delete().eq("id", t.id);
       loadTemplates();
     } catch (err) { /* ignore */ }
   };
-
-  const renderCanvas = () =>
-    new Promise((resolve, reject) => {
-      const img = new Image();
-      img.onload = () => {
-        const canvas = document.createElement("canvas");
-        canvas.width = img.naturalWidth;
-        canvas.height = img.naturalHeight;
-        const ctx = canvas.getContext("2d");
-        ctx.drawImage(img, 0, 0);
-        selected.fields.forEach((f) => {
-          const boxX = (f.x / 100) * canvas.width;
-          const boxY = (f.y / 100) * canvas.height;
-          const boxW = (f.w / 100) * canvas.width;
-          const boxH = (f.h / 100) * canvas.height;
-          const text = values[f.id] || "";
-          const baseFontPx = (f.fontSizePct / 100) * canvas.height;
-          const safeWidth = boxW * 0.92;
-          const fontPx = fitFontSize(ctx, text, safeWidth, baseFontPx, f.fontWeight);
-
-          ctx.save();
-          ctx.beginPath();
-          ctx.rect(boxX, boxY, boxW, boxH);
-          ctx.clip();
-
-          if (f.bgColor) {
-            ctx.fillStyle = f.bgColor;
-            ctx.fillRect(boxX, boxY, boxW, boxH);
-          }
-
-          ctx.font = `${f.fontWeight || 600} ${fontPx}px 'JetBrains Mono', monospace`;
-          ctx.fillStyle = f.color || "#16233A";
-          ctx.textBaseline = "middle";
-          ctx.textAlign = f.align || "left";
-          let drawX = boxX + boxW * 0.04;
-          if (f.align === "center") drawX = boxX + boxW / 2;
-          else if (f.align === "right") drawX = boxX + boxW * 0.96;
-          ctx.fillText(text, drawX, boxY + boxH / 2);
-          ctx.restore();
-        });
-        resolve(canvas);
-      };
-      img.onerror = reject;
-      img.src = selected.image;
-    });
 
   const handleDownload = async () => {
     if (!selected || downloading) return;
     setDownloading(true);
     setDownloadError("");
     try {
-      const canvas = await renderCanvas();
+      const pages = getTemplatePages(selected);
+      const isMultiPage = pages.length > 1;
       const fileBase = (selected.name || "hasil").replace(/\s+/g, "_");
-      if (downloadFormat === "png") {
+      const canvases = await Promise.all(
+        pages.map((src, idx) =>
+          renderPageCanvas(src, selected.fields.filter((f) => (f.page || 0) === idx), values)
+        )
+      );
+
+      if (!isMultiPage && downloadFormat === "png") {
+        const canvas = canvases[0];
         await new Promise((resolve, reject) => {
           canvas.toBlob((blob) => {
             if (!blob) return reject(new Error("Gagal membuat PNG"));
@@ -692,9 +832,12 @@ function FillPage() {
           }, "image/png");
         });
       } else {
-        const jpegDataUrl = canvas.toDataURL("image/jpeg", 0.92);
-        const jpegBytes = dataUrlToBytes(jpegDataUrl);
-        const pdfBytes = buildPdfFromJpeg(jpegBytes, canvas.width, canvas.height);
+        const pageData = canvases.map((canvas) => ({
+          jpegBytes: dataUrlToBytes(canvas.toDataURL("image/jpeg", 0.92)),
+          width: canvas.width,
+          height: canvas.height,
+        }));
+        const pdfBytes = buildMultiPagePdf(pageData);
         const blob = new Blob([pdfBytes], { type: "application/pdf" });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
@@ -738,80 +881,137 @@ function FillPage() {
           </p>
         ) : (
           <div className="flex flex-wrap gap-4">
-            {templates.map((t) => (
-              <div
-                key={t.id}
-                onClick={() => setSelected(t)}
-                style={{
-                  width: 200, cursor: "pointer", border: `1px solid ${LINE}`, borderRadius: 8, overflow: "hidden",
-                  background: "#FCFBF7",
-                }}
-              >
-                <img src={t.image} alt={t.name} style={{ width: "100%", height: 130, objectFit: "cover", display: "block" }} />
-                <div className="p-2 flex items-center justify-between">
-                  <div>
-                    <div style={{ fontSize: 13, fontWeight: 600 }}>{t.name}</div>
-                    <div className="mono" style={{ fontSize: 10, color: "#8A8577" }}>{t.fields.length} field</div>
+            {templates.map((t) => {
+              const pageCount = getTemplatePages(t).length;
+              return (
+                <div
+                  key={t.id}
+                  onClick={() => setSelected(t)}
+                  style={{
+                    width: 200, cursor: "pointer", border: `1px solid ${LINE}`, borderRadius: 8, overflow: "hidden",
+                    background: "#FCFBF7",
+                  }}
+                >
+                  <img src={t.image} alt={t.name} style={{ width: "100%", height: 130, objectFit: "cover", display: "block" }} />
+                  <div className="p-2 flex items-center justify-between">
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 600 }}>{t.name}</div>
+                      <div className="mono" style={{ fontSize: 10, color: "#8A8577" }}>
+                        {pageCount > 1 ? `${pageCount} halaman · ` : ""}{t.fields.length} field
+                      </div>
+                    </div>
+                    <button
+                      onClick={(e) => deleteTemplate(t, e)}
+                      style={{ fontSize: 11, color: "#B0432E" }}
+                      title="Hapus template"
+                    >
+                      Hapus
+                    </button>
                   </div>
-                  <button
-                    onClick={(e) => deleteTemplate(t.id, e)}
-                    style={{ fontSize: 11, color: "#B0432E" }}
-                    title="Hapus template"
-                  >
-                    Hapus
-                  </button>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
     );
   }
 
+  const pages = getTemplatePages(selected);
+  const isMultiPage = pages.length > 1;
+  const pagesWithFields = new Set(selected.fields.map((f) => f.page || 0));
+  const visiblePageIndexes =
+    previewFilter === "all" || pagesWithFields.size === 0
+      ? pages.map((_, i) => i)
+      : pages.map((_, i) => i).filter((i) => pagesWithFields.has(i));
+
   return (
     <div className="flex" style={{ minHeight: 580 }}>
-      <div style={{ width: 280, borderRight: `1px solid ${LINE}`, background: "#FCFBF7" }} className="p-4 flex flex-col gap-3">
+      <div style={{ width: 280, borderRight: `1px solid ${LINE}`, background: "#FCFBF7" }} className="p-4 flex flex-col gap-3" >
         <button onClick={() => setSelected(null)} className="mono" style={{ fontSize: 11, color: TEAL_DARK, textAlign: "left" }}>
           ← Pilih template lain
         </button>
         <div style={{ fontSize: 15, fontWeight: 700 }}>{selected.name}</div>
-        <div style={{ borderTop: `1px solid ${LINE}`, paddingTop: 10 }} className="flex flex-col gap-3">
-          {selected.fields.map((f) => (
-            <LabeledInput key={f.id} label={f.label}>
-              <input
-                type="text"
-                value={values[f.id] || ""}
-                onChange={(e) => setValues((v) => ({ ...v, [f.id]: e.target.value }))}
-                placeholder={`isi ${f.label}...`}
-                style={{ width: "100%", padding: "7px 8px", borderRadius: 4, border: `1px solid ${LINE}`, fontSize: 13 }}
-              />
-            </LabeledInput>
+
+        {isMultiPage && (
+          <div className="flex gap-1" style={{ background: "#EFEBDF", padding: 3, borderRadius: 6 }}>
+            <button
+              onClick={() => setPreviewFilter("withFields")}
+              className="mono"
+              style={{
+                flex: 1, padding: "5px 0", fontSize: 10, fontWeight: 700, borderRadius: 4,
+                background: previewFilter === "withFields" ? INK : "transparent",
+                color: previewFilter === "withFields" ? PAPER : INK,
+              }}
+            >
+              HAL. BERISI FIELD
+            </button>
+            <button
+              onClick={() => setPreviewFilter("all")}
+              className="mono"
+              style={{
+                flex: 1, padding: "5px 0", fontSize: 10, fontWeight: 700, borderRadius: 4,
+                background: previewFilter === "all" ? INK : "transparent",
+                color: previewFilter === "all" ? PAPER : INK,
+              }}
+            >
+              SEMUA HALAMAN
+            </button>
+          </div>
+        )}
+
+        <div style={{ borderTop: `1px solid ${LINE}`, paddingTop: 10, overflowY: "auto" }} className="flex flex-col gap-3">
+          {Array.from(pagesWithFields).sort((a, b) => a - b).map((pageIdx) => (
+            <div key={pageIdx} className="flex flex-col gap-3">
+              {isMultiPage && (
+                <div className="mono" style={{ fontSize: 10, letterSpacing: 0.5, color: "#8A8577" }}>
+                  HALAMAN {pageIdx + 1}
+                </div>
+              )}
+              {selected.fields.filter((f) => (f.page || 0) === pageIdx).map((f) => (
+                <LabeledInput key={f.id} label={f.label}>
+                  <input
+                    type="text"
+                    value={values[f.id] || ""}
+                    onChange={(e) => setValues((v) => ({ ...v, [f.id]: e.target.value }))}
+                    placeholder={`isi ${f.label}...`}
+                    style={{ width: "100%", padding: "7px 8px", borderRadius: 4, border: `1px solid ${LINE}`, fontSize: 13 }}
+                  />
+                </LabeledInput>
+              ))}
+            </div>
           ))}
         </div>
+
         <div style={{ marginTop: "auto" }} className="flex flex-col gap-2">
-          <div className="flex gap-1" style={{ background: "#EFEBDF", padding: 3, borderRadius: 6 }}>
-            {["png", "pdf"].map((fmt) => (
-              <button
-                key={fmt}
-                onClick={() => setDownloadFormat(fmt)}
-                className="mono"
-                style={{
-                  flex: 1, padding: "5px 0", fontSize: 11, fontWeight: 700, borderRadius: 4,
-                  background: downloadFormat === fmt ? INK : "transparent",
-                  color: downloadFormat === fmt ? PAPER : INK,
-                }}
-              >
-                {fmt.toUpperCase()}
-              </button>
-            ))}
-          </div>
+          {isMultiPage ? (
+            <p className="mono" style={{ fontSize: 10, color: "#8A8577", textAlign: "center" }}>
+              Format unduhan: PDF ({pages.length} halaman)
+            </p>
+          ) : (
+            <div className="flex gap-1" style={{ background: "#EFEBDF", padding: 3, borderRadius: 6 }}>
+              {["png", "pdf"].map((fmt) => (
+                <button
+                  key={fmt}
+                  onClick={() => setDownloadFormat(fmt)}
+                  className="mono"
+                  style={{
+                    flex: 1, padding: "5px 0", fontSize: 11, fontWeight: 700, borderRadius: 4,
+                    background: downloadFormat === fmt ? INK : "transparent",
+                    color: downloadFormat === fmt ? PAPER : INK,
+                  }}
+                >
+                  {fmt.toUpperCase()}
+                </button>
+              ))}
+            </div>
+          )}
           <button
             onClick={handleDownload}
             disabled={downloading}
             style={{ padding: "10px 0", borderRadius: 6, fontWeight: 700, fontSize: 13, background: TEAL, color: PAPER, opacity: downloading ? 0.7 : 1 }}
           >
-            {downloading ? "Memproses…" : `Unduh Hasil (${downloadFormat.toUpperCase()})`}
+            {downloading ? "Memproses…" : `Unduh Hasil (${isMultiPage ? "PDF" : downloadFormat.toUpperCase()})`}
           </button>
           {downloadError && (
             <p style={{ fontSize: 11, color: "#B0432E" }}>{downloadError}</p>
@@ -819,27 +1019,20 @@ function FillPage() {
         </div>
       </div>
 
-      <div className="blueprint-bg flex-1 flex items-center justify-center p-8">
-        <div style={{ position: "relative", maxWidth: 640, width: "100%", boxShadow: "0 4px 20px rgba(22,35,58,0.15)" }}>
-          <img ref={previewImgRef} src={selected.image} alt={selected.name} style={{ display: "block", width: "100%" }} draggable={false} />
-          {selected.fields.map((f) => (
-            <div
-              key={f.id}
-              style={{
-                position: "absolute",
-                left: `${f.x}%`, top: `${f.y}%`, width: `${f.w}%`, height: `${f.h}%`,
-                display: "flex", alignItems: "center",
-                justifyContent: f.align === "center" ? "center" : f.align === "right" ? "flex-end" : "flex-start",
-                fontSize: `${getPreviewFontPx(f, values[f.id] || f.label)}px`,
-                color: f.color, fontWeight: f.fontWeight || 600,
-                fontFamily: "'JetBrains Mono', monospace",
-                background: f.bgColor || "transparent",
-                overflow: "hidden", whiteSpace: "nowrap", pointerEvents: "none",
-              }}
-            >
-              <span style={{ opacity: values[f.id] ? 1 : 0.35 }}>
-                {values[f.id] || f.label}
-              </span>
+      <div className="blueprint-bg flex-1 flex p-8" style={{ overflow: "auto" }}>
+        <div className="flex flex-col gap-6" style={{ width: "100%", maxWidth: 640, margin: "auto" }}>
+          {visiblePageIndexes.map((idx) => (
+            <div key={idx}>
+              {isMultiPage && (
+                <div className="mono" style={{ fontSize: 10, color: "#8A8577", marginBottom: 6 }}>
+                  HALAMAN {idx + 1}{!pagesWithFields.has(idx) && " · tanpa field"}
+                </div>
+              )}
+              <PagePreview
+                pageSrc={pages[idx]}
+                pageFields={selected.fields.filter((f) => (f.page || 0) === idx)}
+                values={values}
+              />
             </div>
           ))}
         </div>
