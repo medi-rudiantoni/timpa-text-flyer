@@ -32,6 +32,19 @@ const LINE = "#D8D3C4";
 
 const uid = () => Math.random().toString(36).slice(2, 9);
 
+/* Simple accessibility gate, NOT real authentication: anyone with browser
+   devtools access could bypass this. It just hides the editor/history UI
+   from casual sales users. Add your email to this list, then in the
+   browser set localStorage key "editor" to that email to unlock it. */
+const ALLOWED_EDITOR_EMAILS = ["medirudiantoni@gmail.com"];
+function isEditorUser() {
+  try {
+    return ALLOWED_EDITOR_EMAILS.includes(localStorage.getItem("editor"));
+  } catch {
+    return false;
+  }
+}
+
 function fileToDataURL(file) {
   return new Promise((res, rej) => {
     const r = new FileReader();
@@ -174,7 +187,9 @@ export default function App() {
 }
 
 function TemplateEditorAppInner() {
-  const [mode, setMode] = useState("editor"); // 'editor' | 'fill' | 'history'
+  const isEditor = useState(() => isEditorUser())[0];
+  const [mode, setMode] = useState(() => (isEditorUser() ? "editor" : "fill")); // 'editor' | 'fill' | 'history'
+  const activeMode = isEditor ? mode : "fill";
 
   return (
     <div style={{ background: PAPER, minHeight: 640, fontFamily: "'Space Grotesk', system-ui, sans-serif", color: INK }}>
@@ -196,47 +211,51 @@ function TemplateEditorAppInner() {
         <div className="flex items-center gap-2">
           <div style={{ width: 10, height: 10, background: TEAL, transform: "rotate(45deg)" }} />
           <span className="mono" style={{ fontSize: 13, letterSpacing: 1, fontWeight: 700, textTransform: "uppercase" }}>
-            Edit&nbsp;Text Flyer
+            Titik&nbsp;Edit
           </span>
         </div>
         <div className="flex gap-1" style={{ background: "#EFEBDF", padding: 4, borderRadius: 8 }}>
-          <button
-            className="tag-btn mono"
-            onClick={() => setMode("editor")}
-            style={{
-              padding: "6px 14px", borderRadius: 6, fontSize: 12, fontWeight: 600, letterSpacing: 0.5,
-              background: mode === "editor" ? INK : "transparent",
-              color: mode === "editor" ? PAPER : INK,
-            }}
-          >
-            01 · SUSUN TEMPLATE
-          </button>
+          {isEditor && (
+            <button
+              className="tag-btn mono"
+              onClick={() => setMode("editor")}
+              style={{
+                padding: "6px 14px", borderRadius: 6, fontSize: 12, fontWeight: 600, letterSpacing: 0.5,
+                background: activeMode === "editor" ? INK : "transparent",
+                color: activeMode === "editor" ? PAPER : INK,
+              }}
+            >
+              01 · SUSUN TEMPLATE
+            </button>
+          )}
           <button
             className="tag-btn mono"
             onClick={() => setMode("fill")}
             style={{
               padding: "6px 14px", borderRadius: 6, fontSize: 12, fontWeight: 600, letterSpacing: 0.5,
-              background: mode === "fill" ? INK : "transparent",
-              color: mode === "fill" ? PAPER : INK,
+              background: activeMode === "fill" ? INK : "transparent",
+              color: activeMode === "fill" ? PAPER : INK,
             }}
           >
-            02 · ISI DATA
+            {isEditor ? "02 · ISI DATA" : "ISI DATA"}
           </button>
-          <button
-            className="tag-btn mono"
-            onClick={() => setMode("history")}
-            style={{
-              padding: "6px 14px", borderRadius: 6, fontSize: 12, fontWeight: 600, letterSpacing: 0.5,
-              background: mode === "history" ? INK : "transparent",
-              color: mode === "history" ? PAPER : INK,
-            }}
-          >
-            03 · RIWAYAT
-          </button>
+          {isEditor && (
+            <button
+              className="tag-btn mono"
+              onClick={() => setMode("history")}
+              style={{
+                padding: "6px 14px", borderRadius: 6, fontSize: 12, fontWeight: 600, letterSpacing: 0.5,
+                background: activeMode === "history" ? INK : "transparent",
+                color: activeMode === "history" ? PAPER : INK,
+              }}
+            >
+              03 · RIWAYAT
+            </button>
+          )}
         </div>
       </div>
 
-      {mode === "editor" ? <EditorPage /> : mode === "fill" ? <FillPage /> : <HistoryPage />}
+      {activeMode === "editor" ? <EditorPage /> : activeMode === "fill" ? <FillPage isEditor={isEditor} /> : <HistoryPage />}
     </div>
   );
 }
@@ -792,7 +811,7 @@ function PagePreview({ pageSrc, pageFields, values }) {
   );
 }
 
-function FillPage() {
+function FillPage({ isEditor }) {
   const queryClient = useQueryClient();
   const { data: templates = [], isLoading: loading, isError: loadError, refetch: loadTemplates } = useQuery({
     queryKey: ["templates"],
@@ -945,13 +964,15 @@ function FillPage() {
                         {pageCount > 1 ? `${pageCount} halaman · ` : ""}{t.fields.length} field
                       </div>
                     </div>
-                    <button
-                      onClick={(e) => deleteTemplate(t, e)}
-                      style={{ fontSize: 11, color: "#B0432E" }}
-                      title="Hapus template"
-                    >
-                      Hapus
-                    </button>
+                    {isEditor && (
+                      <button
+                        onClick={(e) => deleteTemplate(t, e)}
+                        style={{ fontSize: 11, color: "#B0432E" }}
+                        title="Hapus template"
+                      >
+                        Hapus
+                      </button>
+                    )}
                   </div>
                 </div>
               );
