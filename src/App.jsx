@@ -1,5 +1,28 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import { supabase } from "./supabaseClient";
+import { QueryClient, QueryClientProvider, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: { staleTime: 30_000, refetchOnWindowFocus: false },
+  },
+});
+
+async function fetchTemplates() {
+  const { data, error } = await supabase.from("templates").select("*").order("created_at", { ascending: false });
+  if (error) throw error;
+  return data || [];
+}
+
+async function fetchDownloadLogs() {
+  const { data, error } = await supabase
+    .from("download_logs")
+    .select("*")
+    .order("downloaded_at", { ascending: false })
+    .limit(200);
+  if (error) throw error;
+  return data || [];
+}
 
 const INK = "#16233A";
 const PAPER = "#F7F5EF";
@@ -143,7 +166,15 @@ function fitFontSize(ctx, text, maxWidthPx, baseFontPx, weight, minFontPx = 8) {
 }
 
 export default function App() {
-  const [mode, setMode] = useState("fill"); // 'editor' | 'fill'
+  return (
+    <QueryClientProvider client={queryClient}>
+      <TemplateEditorAppInner />
+    </QueryClientProvider>
+  );
+}
+
+function TemplateEditorAppInner() {
+  const [mode, setMode] = useState("editor"); // 'editor' | 'fill' | 'history'
 
   return (
     <div style={{ background: PAPER, minHeight: 640, fontFamily: "'Space Grotesk', system-ui, sans-serif", color: INK }}>
@@ -165,7 +196,7 @@ export default function App() {
         <div className="flex items-center gap-2">
           <div style={{ width: 10, height: 10, background: TEAL, transform: "rotate(45deg)" }} />
           <span className="mono" style={{ fontSize: 13, letterSpacing: 1, fontWeight: 700, textTransform: "uppercase" }}>
-            Titik&nbsp;Edit
+            Edit&nbsp;Text Flyer
           </span>
         </div>
         <div className="flex gap-1" style={{ background: "#EFEBDF", padding: 4, borderRadius: 8 }}>
@@ -191,10 +222,21 @@ export default function App() {
           >
             02 · ISI DATA
           </button>
+          <button
+            className="tag-btn mono"
+            onClick={() => setMode("history")}
+            style={{
+              padding: "6px 14px", borderRadius: 6, fontSize: 12, fontWeight: 600, letterSpacing: 0.5,
+              background: mode === "history" ? INK : "transparent",
+              color: mode === "history" ? PAPER : INK,
+            }}
+          >
+            03 · RIWAYAT
+          </button>
         </div>
       </div>
 
-      {mode === "editor" ? <EditorPage /> : <FillPage />}
+      {mode === "editor" ? <EditorPage /> : mode === "fill" ? <FillPage /> : <HistoryPage />}
     </div>
   );
 }
@@ -212,6 +254,7 @@ function EditorPage() {
   const [pdfPages, setPdfPages] = useState([]); // dataURLs for each page, when source is a multi-page PDF
   const [pdfPageIndex, setPdfPageIndex] = useState(0);
   const overlayRef = useRef(null);
+  const queryClient = useQueryClient();
 
   const selected = fields.find((f) => f.id === selectedId) || null;
 
@@ -332,7 +375,9 @@ function EditorPage() {
       const { error } = await supabase
         .from("templates")
         .insert({ name: templateName.trim(), image: uploadedUrls[0], fields, pages: uploadedUrls });
-      setSaveStatus(error ? "error" : "saved");
+      if (error) throw error;
+      setSaveStatus("saved");
+      queryClient.invalidateQueries({ queryKey: ["templates"] });
     } catch (err) {
       setSaveStatus("error");
     }
@@ -748,33 +793,17 @@ function PagePreview({ pageSrc, pageFields, values }) {
 }
 
 function FillPage() {
-  const [templates, setTemplates] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState(false);
+  const queryClient = useQueryClient();
+  const { data: templates = [], isLoading: loading, isError: loadError, refetch: loadTemplates } = useQuery({
+    queryKey: ["templates"],
+    queryFn: fetchTemplates,
+  });
   const [selected, setSelected] = useState(null);
   const [values, setValues] = useState({});
   const [downloadFormat, setDownloadFormat] = useState("png");
   const [downloading, setDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState("");
   const [previewFilter, setPreviewFilter] = useState("withFields"); // 'withFields' | 'all'
-
-  const loadTemplates = useCallback(async () => {
-    setLoading(true);
-    setLoadError(false);
-    try {
-      const { data, error } = await supabase
-        .from("templates")
-        .select("*")
-        .order("created_at", { ascending: false });
-      if (error) throw error;
-      setTemplates(data || []);
-    } catch (e) {
-      setLoadError(true);
-    }
-    setLoading(false);
-  }, []);
-
-  useEffect(() => { loadTemplates(); }, [loadTemplates]);
 
   useEffect(() => {
     if (selected) {
@@ -785,9 +814,8 @@ function FillPage() {
     }
   }, [selected]);
 
-  const deleteTemplate = async (t, e) => {
-    e.stopPropagation();
-    try {
+  const deleteMutation = useMutation({
+    mutationFn: async (t) => {
       const marker = "/object/public/template-images/";
       const paths = getTemplatePages(t)
         .map((url) => {
@@ -796,9 +824,15 @@ function FillPage() {
         })
         .filter(Boolean);
       if (paths.length) await supabase.storage.from("template-images").remove(paths);
-      await supabase.from("templates").delete().eq("id", t.id);
-      loadTemplates();
-    } catch (err) { /* ignore */ }
+      const { error } = await supabase.from("templates").delete().eq("id", t.id);
+      if (error) throw error;
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["templates"] }),
+  });
+
+  const deleteTemplate = (t, e) => {
+    e.stopPropagation();
+    deleteMutation.mutate(t);
   };
 
   const handleDownload = async () => {
@@ -848,6 +882,17 @@ function FillPage() {
         a.remove();
         URL.revokeObjectURL(url);
       }
+
+      const fieldValuesByLabel = {};
+      selected.fields.forEach((f) => { fieldValuesByLabel[f.label] = values[f.id] || ""; });
+      supabase.from("download_logs").insert({
+        template_id: selected.id,
+        template_name: selected.name,
+        field_values: fieldValuesByLabel,
+        format: isMultiPage ? "pdf" : downloadFormat,
+      }).then(() => {
+        queryClient.invalidateQueries({ queryKey: ["download_logs"] });
+      }); // best-effort, don't block/fail the download on log errors
     } catch (err) {
       setDownloadError("Gagal mengunduh: " + (err?.message || "terjadi kesalahan"));
     }
@@ -1037,6 +1082,94 @@ function FillPage() {
           ))}
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ============================== HISTORY (RIWAYAT) ============================== */
+
+function HistoryPage() {
+  const { data: logs = [], isLoading: loading, isError: loadError, refetch: loadLogs } = useQuery({
+    queryKey: ["download_logs"],
+    queryFn: fetchDownloadLogs,
+  });
+
+  const formatTime = (iso) => {
+    try {
+      return new Date(iso).toLocaleString("id-ID", {
+        day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit",
+      });
+    } catch {
+      return iso;
+    }
+  };
+
+  if (loading) {
+    return <div className="p-8 mono" style={{ fontSize: 13, color: "#8A8577" }}>Memuat riwayat…</div>;
+  }
+
+  if (loadError) {
+    return (
+      <div className="p-8">
+        <p style={{ fontSize: 13, color: "#B0432E", marginBottom: 8 }}>Gagal memuat riwayat download.</p>
+        <button onClick={loadLogs} className="mono" style={{ fontSize: 12, padding: "6px 12px", borderRadius: 6, background: TEAL, color: PAPER }}>
+          Coba lagi
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="p-6">
+      <div className="flex items-center justify-between" style={{ marginBottom: 12 }}>
+        <div className="mono" style={{ fontSize: 11, letterSpacing: 1, color: "#6B7280" }}>
+          RIWAYAT DOWNLOAD ({logs.length})
+        </div>
+        <button onClick={loadLogs} className="mono" style={{ fontSize: 11, color: TEAL_DARK }}>
+          ↻ Refresh
+        </button>
+      </div>
+
+      {logs.length === 0 ? (
+        <p style={{ fontSize: 13, color: "#8A8577" }}>Belum ada yang download hasil apa pun.</p>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {logs.map((log) => (
+            <div
+              key={log.id}
+              style={{ border: `1px solid ${LINE}`, borderRadius: 8, padding: 12, background: "#FCFBF7" }}
+            >
+              <div className="flex items-center justify-between" style={{ flexWrap: "wrap", gap: 6 }}>
+                <div style={{ fontSize: 14, fontWeight: 700 }}>{log.template_name}</div>
+                <div className="flex items-center gap-2">
+                  <span
+                    className="mono"
+                    style={{
+                      fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 4,
+                      background: TEAL, color: PAPER,
+                    }}
+                  >
+                    {(log.format || "").toUpperCase()}
+                  </span>
+                  <span className="mono" style={{ fontSize: 11, color: "#8A8577" }}>
+                    {formatTime(log.downloaded_at)}
+                  </span>
+                </div>
+              </div>
+              {log.field_values && Object.keys(log.field_values).length > 0 && (
+                <div className="flex flex-col gap-1" style={{ marginTop: 8, borderTop: `1px solid ${LINE}`, paddingTop: 8 }}>
+                  {Object.entries(log.field_values).map(([label, value]) => (
+                    <div key={label} className="flex" style={{ fontSize: 12, gap: 6 }}>
+                      <span className="mono" style={{ color: "#8A8577", minWidth: 90 }}>{label}</span>
+                      <span style={{ color: INK }}>{value || <em style={{ color: "#B5AF9C" }}>(kosong)</em>}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
