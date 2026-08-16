@@ -992,62 +992,67 @@ function FillPage({ isEditor }) {
       : pages.map((_, i) => i).filter((i) => pagesWithFields.has(i));
 
   return (
-    <div className="flex" style={{ minHeight: 580 }}>
-      <div style={{ width: 280, borderRight: `1px solid ${LINE}`, background: "#FCFBF7" }} className="p-4 flex flex-col gap-3" >
+    <div className="flex flex-col md:flex-row" style={{ minHeight: 580 }}>
+      <div className={`md:w-70 md:border-r border-r-[${LINE}] bg-[#FCFBF7] p-4 flex flex-col gap-3 md:max-h-screen md:pb-20 md:sticky top-0`} >
         <button onClick={() => setSelected(null)} className="mono" style={{ fontSize: 11, color: TEAL_DARK, textAlign: "left" }}>
           ← Pilih template lain
         </button>
-        <div style={{ fontSize: 15, fontWeight: 700 }}>{selected.name}</div>
 
-        {isMultiPage && (
-          <div className="flex gap-1" style={{ background: "#EFEBDF", padding: 3, borderRadius: 6 }}>
-            <button
-              onClick={() => setPreviewFilter("withFields")}
-              className="mono"
-              style={{
-                flex: 1, padding: "5px 0", fontSize: 10, fontWeight: 700, borderRadius: 4,
-                background: previewFilter === "withFields" ? INK : "transparent",
-                color: previewFilter === "withFields" ? PAPER : INK,
-              }}
-            >
-              HAL. BERISI FIELD
-            </button>
-            <button
-              onClick={() => setPreviewFilter("all")}
-              className="mono"
-              style={{
-                flex: 1, padding: "5px 0", fontSize: 10, fontWeight: 700, borderRadius: 4,
-                background: previewFilter === "all" ? INK : "transparent",
-                color: previewFilter === "all" ? PAPER : INK,
-              }}
-            >
-              SEMUA HALAMAN
-            </button>
-          </div>
-        )}
+        <div className="flex-1 overflow-y-auto">
 
-        <div style={{ borderTop: `1px solid ${LINE}`, paddingTop: 10, overflowY: "auto" }} className="flex flex-col gap-3">
-          {Array.from(pagesWithFields).sort((a, b) => a - b).map((pageIdx) => (
-            <div key={pageIdx} className="flex flex-col gap-3">
-              {isMultiPage && (
-                <div className="mono" style={{ fontSize: 10, letterSpacing: 0.5, color: "#8A8577" }}>
-                  HALAMAN {pageIdx + 1}
-                </div>
-              )}
-              {selected.fields.filter((f) => (f.page || 0) === pageIdx).map((f) => (
-                <LabeledInput key={f.id} label={f.label}>
-                  <input
-                    type="text"
-                    value={values[f.id] || ""}
-                    onChange={(e) => setValues((v) => ({ ...v, [f.id]: e.target.value }))}
-                    placeholder={`isi ${f.label}...`}
-                    style={{ width: "100%", padding: "7px 8px", borderRadius: 4, border: `1px solid ${LINE}`, fontSize: 13 }}
-                  />
-                </LabeledInput>
-              ))}
+          <div style={{ fontSize: 15, fontWeight: 700 }}>{selected.name}</div>
+
+          {isMultiPage && (
+            <div className="flex gap-1" style={{ background: "#EFEBDF", padding: 3, borderRadius: 6 }}>
+              <button
+                onClick={() => setPreviewFilter("withFields")}
+                className="mono"
+                style={{
+                  flex: 1, padding: "5px 0", fontSize: 10, fontWeight: 700, borderRadius: 4,
+                  background: previewFilter === "withFields" ? INK : "transparent",
+                  color: previewFilter === "withFields" ? PAPER : INK,
+                }}
+              >
+                HAL. BERISI FIELD
+              </button>
+              <button
+                onClick={() => setPreviewFilter("all")}
+                className="mono"
+                style={{
+                  flex: 1, padding: "5px 0", fontSize: 10, fontWeight: 700, borderRadius: 4,
+                  background: previewFilter === "all" ? INK : "transparent",
+                  color: previewFilter === "all" ? PAPER : INK,
+                }}
+              >
+                SEMUA HALAMAN
+              </button>
             </div>
-          ))}
+          )}
+
+          <div style={{ borderTop: `1px solid ${LINE}`, paddingTop: 10, overflowY: "auto" }} className="flex flex-col gap-3">
+            {Array.from(pagesWithFields).sort((a, b) => a - b).map((pageIdx) => (
+              <div key={pageIdx} className="flex flex-col gap-3">
+                {isMultiPage && (
+                  <div className="mono" style={{ fontSize: 10, letterSpacing: 0.5, color: "#8A8577" }}>
+                    HALAMAN {pageIdx + 1}
+                  </div>
+                )}
+                {selected.fields.filter((f) => (f.page || 0) === pageIdx).map((f) => (
+                  <LabeledInput key={f.id} label={f.label}>
+                    <input
+                      type="text"
+                      value={values[f.id] || ""}
+                      onChange={(e) => setValues((v) => ({ ...v, [f.id]: e.target.value }))}
+                      placeholder={`isi ${f.label}...`}
+                      style={{ width: "100%", padding: "7px 8px", borderRadius: 4, border: `1px solid ${LINE}`, fontSize: 13 }}
+                    />
+                  </LabeledInput>
+                ))}
+              </div>
+            ))}
+          </div>
         </div>
+
 
         <div style={{ marginTop: "auto" }} className="flex flex-col gap-2">
           {isMultiPage ? (
